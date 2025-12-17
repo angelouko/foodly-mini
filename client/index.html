@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+  <meta charset="UTF-8" />
+  <title>Foodly 🎄 | Order Online</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="styles.css">
+
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script>
+    
+    const CONFIG = {
+      API_BASE: "http://localhost:5000",
+      LS_FAVORITES_key: "favorites"
+    };
+
+    const e = React.createElement;
+    const { useEffect, useMemo, useState } = React;
+
+    
+    function formatMoney(value) {
+      return "€" + Number(value).toFixed(2);
+    }
+
+    function safeReadJSON(key, fallback) {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : fallback;
+      } catch {
+        return fallback;
+      }
+    }
+
+    function safeWriteJSON(key, value) {
+      try {
+        localStorage.setItem(key, JSON.stringify(value));
+      } catch {
+       
+      }
+    }
+
+    async function fetchJSON(url) {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        const text = await resp.text().catch(() => "");
+        throw new Error("HTTP " + resp.status + (text ? " - " + text : ""));
+      }
+      return await resp.json();
+    }
+
+    
+    function App() {
+      const [page, setPage] = useState("home");
+
+     
+      const [restaurants, setRestaurants] = useState([]);
+      const [menu, setMenu] = useState([]);
+      const [selectedRestaurant, setSelectedRestaurant] = useState(null);
+
+     
+      const [loading, setLoading] = useState(false);
+      const [errorMsg, setErrorMsg] = useState("");
+
+      
+      const [cart, setCart] = useState([]);
+
+      
+      const [favorites, setFavorites] = useState(() =>
+        safeReadJSON(CONFIG.LS_FAVORITES_key, [])
+      );
+
+      
+      const [search, setSearch] = useState("");
+      const [category, setCategory] = useState("All");
+      const [minRating, setMinRating] = useState("0");
+      const [maxDistance, setMaxDistance] = useState("9999");
+      const [sort, setSort] = useState("relevance");
+
+      
+      useEffect(() => {
+        safeWriteJSON(CONFIG.LS_FAVORITES_key, favorites);
+      }, [favorites]);
+
+      
+      useEffect(() => {
+        if (page !== "home" && page !== "favorites") return;
+
+        let cancelled = false;
+        setLoading(true);
+        setErrorMsg("");
+
+        const url =
+          CONFIG.API_BASE + "/api/restaurants" +
+          "?q=" + encodeURIComponent(search) +
+          "&category=" + encodeURIComponent(category) +
+          "&minRating=" + encodeURIComponent(minRating) +
+          "&maxDistance=" + encodeURIComponent(maxDistance) +
+          "&sort=" + encodeURIComponent(sort);
+
+        fetchJSON(url)
+          .then(data => {
+            if (cancelled) return;
+            setRestaurants(Array.isArray(data) ? data : []);
+          })
+          .catch(err => {
+            if (cancelled) return;
+            setErrorMsg("Den fortose ta katastimata. (" + err.message + ")");
+            setRestaurants([]);
+          })
+          .finally(() => {
+            if (cancelled) return;
+            setLoading(false);
+          });
+
+        return () => { cancelled = true; };
+      }, [page, search, category, minRating, maxDistance, sort]);
+
+     
+      function openRestaurant(r) {
+        
+        if (!selectedRestaurant || selectedRestaurant.id !== r.id) {
+          setCart([]);
+        }
+
+        setSelectedRestaurant(r);
+        setMenu([]);
+        setPage("restaurant");
+
+        setErrorMsg("");
+        fetchJSON(CONFIG.API_BASE + "/api/restaurants/" + r.id + "/menu")
+          .then(data => setMenu(Array.isArray(data) ? data : []))
+          .catch(err => setErrorMsg("Den fortose to menou. (" + err.message + ")"));
+      }
+
+      function addToCart(item) {
+        setCart(prev => {
+          const idx = prev.findIndex(x => x.id === item.id);
+          if (idx >= 0) {
+            const copy = prev.slice();
+            copy[idx] = { ...copy[idx], qty: copy[idx].qty + 1 };
+            return copy;
+          }
+          return prev.concat([{ ...item, qty: 1 }]);
+        });
+      }
+
+      function incQty(id) {
+        setCart(prev => prev.map(x => x.id === id ? { ...x, qty: x.qty + 1 } : x));
+      }
+
+      function decQty(id) {
+        setCart(prev => {
+          const copy = prev.map(x => x.id === id ? { ...x, qty: x.qty - 1 } : x);
+          return copy.filter(x => x.qty > 0);
+        });
+      }
+
+      function cartSubtotal() {
+        return cart.reduce((sum, it) => sum + it.price * it.qty, 0);
+      }
+
+      function toggleFavorite(restaurantId) {
+        setFavorites(prev => {
+          const exists = prev.includes(restaurantId);
+          return exists ? prev.filter(x => x !== restaurantId) : prev.concat([restaurantId]);
+        });
+      }
+
+      async function checkout() {
+        if (!selectedRestaurant) return alert("Dialekse katastima prwta.");
+        if (cart.length === 0) return alert("To kalathi einai adeio.");
+
+        const subtotal = cartSubtotal();
+        if (subtotal < selectedRestaurant.minOrder) {
+          return alert("Elaxisti paraggelia: " + formatMoney(selectedRestaurant.minOrder));
+        }
+
+        const payload = {
+          restaurantId: selectedRestaurant.id,
+          items: cart.map(it => ({ id: it.id, qty: it.qty }))
+        };
+
+        try {
+          const resp = await fetch(CONFIG.API_BASE + "/api/orders", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+
+          const data = await resp.json().catch(() => ({}));
+          if (!resp.ok || !data.ok) {
+            alert("Sfalmata sto checkout: " + (data.message || "unknown"));
+            return;
+          }
+
+          alert("✅ Order egine! ID: " + data.orderId);
+          setCart([]);
+          setPage("home");
+        } catch (err) {
+          alert("Sfalmata diktuou sto checkout: " + err.message);
+        }
+      }
+
+      
+      const favoritesSet = useMemo(() => new Set(favorites), [favorites]);
+
+      const favoriteRestaurants = useMemo(() => {
+        return restaurants.filter(r => favoritesSet.has(r.id));
+      }, [restaurants, favoritesSet]);
+
+    
+      function Header() {
+        return e("header", { className: "header" },
+          e("div", null,
+            e("div", { className: "logo" },
+              "Foodly",
+              e("span", { className: "pom" })
+            ),
+            e("div", { className: "subtitle" }, "🎄 Holiday Specials & Fast Delivery")
+          ),
+          e("div", { className: "headerBtns" },
+            e("button", { className: "btn", onClick: () => setPage("home") }, "katastimata"),
+            e("button", { className: "btn", onClick: () => setPage("favorites") }, "Favorites (" + favorites.length + ")"),
+            e("button", { className: "btnPrimary", onClick: () => setPage("cart") }, "Kalathi (" + cart.length + ")")
+          )
+        );
+      }
+
+      function FiltersBar() {
+        return e("div", { className: "filters" },
+          e("input", {
+            className: "search",
+            value: search,
+            onChange: ev => setSearch(ev.target.value),
+            placeholder: "Search px pizza, sushi, burger..."
+          }),
+
+          e("select", { className: "select", value: category, onChange: ev => setCategory(ev.target.value) },
+            e("option", { value: "All" }, "All"),
+            e("option", { value: "Pizza" }, "Pizza"),
+            e("option", { value: "Burgers" }, "Burgers"),
+            e("option", { value: "Sushi" }, "Sushi"),
+            e("option", { value: "Crepes" }, "Crepes"),
+            e("option", { value: "Healthy" }, "Healthy")
+          ),
+
+          e("select", { className: "select", value: minRating, onChange: ev => setMinRating(ev.target.value) },
+            e("option", { value: "0" }, "Rating: Any"),
+            e("option", { value: "4" }, "4.0+"),
+            e("option", { value: "4.3" }, "4.3+"),
+            e("option", { value: "4.6" }, "4.6+")
+          ),
+
+          e("select", { className: "select", value: maxDistance, onChange: ev => setMaxDistance(ev.target.value) },
+            e("option", { value: "9999" }, "Distance: Any"),
+            e("option", { value: "1" }, "≤ 1 km"),
+            e("option", { value: "3" }, "≤ 3 km"),
+            e("option", { value: "5" }, "≤ 5 km")
+          ),
+
+          e("select", { className: "select", value: sort, onChange: ev => setSort(ev.target.value) },
+            e("option", { value: "relevance" }, "Sort: Relevance"),
+            e("option", { value: "rating_desc" }, "Sort: Rating"),
+            e("option", { value: "distance_asc" }, "Sort: Distance"),
+            e("option", { value: "name_asc" }, "Sort: Name")
+          )
+        );
+      }
+
+      function RestaurantCard(r) {
+        const isFav = favoritesSet.has(r.id);
+
+        return e("div", { key: r.id, className: "card" },
+          e("div", { className: "cardTop" },
+            e("div", null,
+              e("h3", { className: "cardTitle" }, r.name),
+              e("div", { className: "muted" }, r.category)
+            ),
+            e("button", {
+              className: isFav ? "favBtn favOn" : "favBtn",
+              onClick: () => toggleFavorite(r.id),
+              title: "Add/Remove favorite"
+            }, isFav ? "♥" : "♡")
+          ),
+
+          
+          e("div", { className: "muted" }, "⭐ " + r.rating + " • " + r.distanceKm + " km"),
+          e("div", { className: "muted" }, "Elaxisti: " + formatMoney(r.minOrder) + " • Delivery: " + formatMoney(r.deliveryFee)),
+
+          e("button", { className: "btnPrimary", onClick: () => openRestaurant(r) }, "menou")
+        );
+      }
+
+      function HomePage() {
+        return e("main", null,
+          e("h2", { className: "title" }, "katastimata"),
+          e(FiltersBar),
+
+          errorMsg ? e("div", { className: "card" }, errorMsg) : null,
+
+          loading
+            ? e("div", { className: "card" }, "Loading...")
+            : e("div", { className: "grid" }, restaurants.map(r => e(RestaurantCard, r)))
+        );
+      }
+
+      function FavoritesPage() {
+        return e("main", null,
+          e("h2", { className: "title" }, "Favorites"),
+          e(FiltersBar),
+
+          errorMsg ? e("div", { className: "card" }, errorMsg) : null,
+
+          loading
+            ? e("div", { className: "card" }, "Loading...")
+            : favoriteRestaurants.length === 0
+              ? e("div", { className: "card" }, "Δεν εχεις ακομα αγαπημενα. Πατα ♥ σε ενα απο τα katastimata μας.")
+              : e("div", { className: "grid" }, favoriteRestaurants.map(r => e(RestaurantCard, r)))
+        );
+      }
+
+      function RestaurantPage() {
+        if (!selectedRestaurant) {
+          return e("main", null, e("div", { className: "card" }, "Διαλεξε καταστημα."));
+        }
+
+        return e("main", null,
+          e("div", { className: "backRow" },
+            e("button", { className: "btn", onClick: () => setPage("home") }, "← Πισω"),
+            e("div", null,
+              e("h2", { className: "title" }, selectedRestaurant.name),
+              e("div", { className: "muted" },
+                selectedRestaurant.category + " • ⭐ " + selectedRestaurant.rating + " • " + selectedRestaurant.distanceKm + " km"
+              )
+            )
+          ),
+
+          e("div", { className: "card metaCard" },
+            e("div", { className: "muted" }, "Elaxisti: " + formatMoney(selectedRestaurant.minOrder)),
+            e("div", { className: "muted" }, "Delivery: " + formatMoney(selectedRestaurant.deliveryFee))
+          ),
+
+          e("h3", { className: "sectionTitle" }, "Menou"),
+          errorMsg ? e("div", { className: "card" }, errorMsg) : null,
+
+          e("div", { className: "grid" },
+            menu.map(item =>
+              e("div", { key: item.id, className: "card" },
+                e("div", { className: "rowBetween" },
+                  e("div", null,
+                    e("h4", { className: "cardTitle" }, item.name),
+                    e("div", { className: "muted" }, formatMoney(item.price))
+                  ),
+                  e("button", { className: "btnPrimary", onClick: () => addToCart(item) }, "Add")
+                )
+              )
+            )
+          )
+        );
+      }
+
+      function CartPage() {
+        const subtotal = cartSubtotal();
+        const deliveryFee = selectedRestaurant ? selectedRestaurant.deliveryFee : 0;
+        const total = subtotal + deliveryFee;
+
+        return e("main", null,
+          e("h2", { className: "title" }, "Kalathi"),
+
+          !selectedRestaurant
+            ? e("div", { className: "card" }, "Den exeis epileksei katastima.")
+            : e("div", { className: "muted", style: { marginBottom: "10px" } }, "Katastima: " + selectedRestaurant.name),
+
+          cart.length === 0
+            ? e("div", { className: "card" }, "To kalathi einai adeio.")
+            : e("div", { className: "card" },
+                cart.map(it =>
+                  e("div", { key: it.id, className: "row" },
+                    e("div", null,
+                      e("div", { className: "rowTitle" }, it.name),
+                      e("div", { className: "muted" }, formatMoney(it.price))
+                    ),
+                    e("div", { className: "qty" },
+                      e("button", { className: "btnSmall", onClick: () => decQty(it.id) }, "-"),
+                      e("span", { className: "qtyNum" }, it.qty),
+                      e("button", { className: "btnSmall", onClick: () => incQty(it.id) }, "+")
+                    )
+                  )
+                ),
+
+                e("hr", { className: "hr" }),
+                e("div", { className: "totalRow" }, e("span", null, "Subtotal"), e("strong", null, formatMoney(subtotal))),
+                e("div", { className: "totalRow" }, e("span", null, "Delivery"), e("strong", null, formatMoney(deliveryFee))),
+                e("div", { className: "totalRow totalBig" }, e("span", null, "Total"), e("strong", null, formatMoney(total))),
+
+                selectedRestaurant && subtotal < selectedRestaurant.minOrder
+                  ? e("div", { className: "warn" }, "Elaxisti paraggelia: " + formatMoney(selectedRestaurant.minOrder))
+                  : null,
+
+                e("button", {
+                  className: "btnPrimary btnWide",
+                  onClick: checkout,
+                  disabled: !selectedRestaurant || cart.length === 0 || (selectedRestaurant && subtotal < selectedRestaurant.minOrder)
+                }, "Checkout")
+              )
+        );
+      }
+
+      
+      let content = null;
+      if (page === "home") content = e(HomePage);
+      else if (page === "favorites") content = e(FavoritesPage);
+      else if (page === "restaurant") content = e(RestaurantPage);
+      else if (page === "cart") content = e(CartPage);
+
+      return e("div", { className: "app" },
+        e(Header),
+        content
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(e(App));
+  </script>
+</body>
+</html>
