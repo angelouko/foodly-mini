@@ -4,7 +4,7 @@ A small full-stack food delivery application inspired by platforms like eFood.
 
 ## Tech Stack
 
-- Frontend: HTML, CSS, React (no JSX, via CDN)
+- Frontend: HTML, CSS, React 
 - Backend: Node.js, Express
 - Styling: Custom CSS (Christmas theme)
 - Storage: LocalStorage (favorites)
